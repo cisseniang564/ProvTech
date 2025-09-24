@@ -1,0 +1,334 @@
+// ====================================================================
+// INTÉGRATION BACKEND PROVTECH - SERVEUR PRINCIPAL MODIFIÉ
+// Fichier: /Users/cisseniang/Documents/ProvTech/backend/server.js
+// ====================================================================
+
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const mysql = require('mysql2/promise');
+require('dotenv').config();
+
+// Import du middleware de compatibilité
+const { 
+  compatibilityAuth, 
+  requirePermission, 
+  migrationRouter,
+  initializeDatabase 
+} = require('./middleware/CompatibilityAuth');
+
+// Import du contrôleur sécurisé
+const secureAuthRoutes = require('./routes/secure/auth');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+// ============ CONFIGURATION SÉCURITÉ ============
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+}));
+
+app.use(cors({
+  origin: process.env.FRONTEND_URL || ['http://localhost:3000', 'http://localhost:5173'],
+  credentials: true
+}));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Rate limiting global
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // 1000 requêtes par IP par fenêtre
+  message: { error: 'Trop de requêtes. Réessayez plus tard.' }
+});
+
+app.use(globalLimiter);
+
+// ============ INITIALISATION BASE DE DONNÉES ============
+let db = null;
+
+async function initApp() {
+  try {
+    // Initialiser la connexion DB
+    db = await initializeDatabase();
+    console.log('✅ Connexion base de données établie');
+    
+    // Test de la structure
+    const [tables] = await db.execute(`
+      SELECT TABLE_NAME 
+      FROM INFORMATION_SCHEMA.TABLES 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME IN ('users', 'audit_logs', 'user_sessions')
+    `, [process.env.DB_NAME || 'provtech']);
+    
+    console.log('📋 Tables disponibles:', tables.map(t => t.TABLE_NAME));
+    
+  } catch (error) {
+    console.error('❌ Erreur initialisation DB:', error);
+    process.exit(1);
+  }
+}
+
+// ============ ROUTES PUBLIQUES ============
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    timestamp: new Date(),
+    uptime: process.uptime(),
+    version: '1.0.0-hybrid',
+    authModes: ['legacy', 'secure'],
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// ============ ROUTES SÉCURISÉES (NOUVELLES) ============
+// Système d'authentification sécurisé avec 2FA
+app.use('/api/auth', secureAuthRoutes);
+
+// Routes de migration 
+app.use('/api/migration', migrationRouter);
+
+// ============ ROUTES LEGACY (VOS ROUTES ACTUELLES) ============
+// Gardez toutes vos routes existantes ici
+// Exemple de structure recommandée :
+
+// Routes d'authentification legacy (conservées)
+// app.use('/api/legacy/auth', require('./routes/legacy/auth'));
+
+// Routes triangles (avec middleware hybride)
+// app.use('/api/triangles', compatibilityAuth, require('./routes/triangles'));
+
+// Routes calculs (avec middleware hybride) 
+// app.use('/api/calculations', compatibilityAuth, require('./routes/calculations'));
+
+// Routes rapports (avec middleware hybride)
+// app.use('/api/reports', compatibilityAuth, require('./routes/reports'));
+
+// ============ ROUTES ADMINISTRATEUR SÉCURISÉES ============
+app.use('/api/admin', 
+  compatibilityAuth, 
+  requirePermission('admin:read'),
+  require('./routes/admin')
+);
+
+// Gestion des utilisateurs (Admin uniquement)
+app.get('/api/users',
+  compatibilityAuth,
+  requirePermission('users:read'),
+  async (req, res) => {
+    try {
+      const [rows] = await db.execute(`
+        SELECT 
+          id, email, firstName, lastName, role, department, 
+          mfa_enabled, last_login, created_at, restrictions,
+          migrated_to_secure, legacy_auth_enabled
+        FROM users 
+        WHERE isActive = true
+        ORDER BY created_at DESC
+      `);
+
+      res.json(rows);
+    } catch (error) {
+      console.error('Erreur lecture utilisateurs:', error);
+      res.status(500).json({ error: 'Erreur serveur' });
+    }
+  }
+);
+
+// Création d'utilisateurs (Admin uniquement)
+app.post('/api/users',
+  compatibilityAuth,
+  requirePermission('users:write'),
+  async (req, res) => {
+    try {
+      const { email, firstName, lastName, role, department, restrictions } = req.body;
+      
+      if (!email || !firstName || !lastName) {
+        return res.status(400).json({ error: 'Champs obligatoires manquants' });
+      }
+
+      // Vérifier email unique
+      const [existing] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
+      if (existing.length > 0) {
+        return res.status(409).json({ error: 'Email déjà utilisé' });
+      }
+
+      // Générer mot de passe temporaire
+      const bcrypt = require('bcrypt');
+      const tempPassword = Math.random().toString(36).slice(-8);
+      const hashedPassword = await bcrypt.hash(tempPassword, 12);
+
+      const userId = require('crypto').randomUUID();
+
+      await db.execute(`
+        INSERT INTO users (
+          id, email, password, firstName, lastName, role, department,
+          restrictions, isActive, must_change_password, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, true, NOW())
+      `, [
+        userId, email.toLowerCase(), hashedPassword, firstName, lastName,
+        role || 'ACTUAIRE_JUNIOR', department, JSON.stringify(restrictions || {})
+      ]);
+
+      console.log(`Utilisateur créé: ${email} - Mot de passe temporaire: ${tempPassword}`);
+
+      res.status(201).json({
+        message: 'Utilisateur créé avec succès',
+        user: { id: userId, email, firstName, lastName, role, department },
+        temporaryPassword: tempPassword
+      });
+
+    } catch (error) {
+      console.error('Erreur création utilisateur:', error);
+      res.status(500).json({ error: 'Erreur serveur' });
+    }
+  }
+);
+
+// ============ ROUTES AUDIT SÉCURISÉES ============
+app.get('/api/audit',
+  compatibilityAuth,
+  requirePermission('audit:read'),
+  async (req, res) => {
+    try {
+      const { limit = 100, offset = 0, userId, eventType, startDate, endDate } = req.query;
+      
+      let whereClause = 'WHERE 1=1';
+      const params = [];
+      
+      if (userId) {
+        whereClause += ' AND user_id = ?';
+        params.push(userId);
+      }
+      if (eventType) {
+        whereClause += ' AND event_type = ?';
+        params.push(eventType);
+      }
+      if (startDate) {
+        whereClause += ' AND timestamp >= ?';
+        params.push(startDate);
+      }
+      if (endDate) {
+        whereClause += ' AND timestamp <= ?';
+        params.push(endDate);
+      }
+
+      const [logs] = await db.execute(`
+        SELECT * FROM audit_logs 
+        ${whereClause}
+        ORDER BY timestamp DESC 
+        LIMIT ? OFFSET ?
+      `, [...params, parseInt(limit), parseInt(offset)]);
+
+      const [countResult] = await db.execute(`
+        SELECT COUNT(*) as total FROM audit_logs ${whereClause}
+      `, params);
+
+      res.json({
+        logs,
+        total: countResult[0].total,
+        limit: parseInt(limit),
+        offset: parseInt(offset)
+      });
+
+    } catch (error) {
+      console.error('Erreur lecture audit:', error);
+      res.status(500).json({ error: 'Erreur serveur' });
+    }
+  }
+);
+
+// ============ ROUTES DE COMPATIBILITÉ ============
+// Route pour vérifier l'auth (utilisée par le frontend)
+app.get('/api/auth/verify',
+  compatibilityAuth,
+  (req, res) => {
+    res.json({
+      user: req.user,
+      authMode: req.authMode,
+      migrationAvailable: req.authMode === 'legacy' && !req.user.migratedToSecure
+    });
+  }
+);
+
+// ============ MIDDLEWARE D'ERREUR ============
+app.use((error, req, res, next) => {
+  console.error('Erreur serveur:', error);
+  
+  if (error.type === 'entity.too.large') {
+    return res.status(413).json({ error: 'Fichier trop volumineux' });
+  }
+
+  res.status(500).json({ 
+    error: 'Erreur interne du serveur',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ============ ROUTE 404 ============
+app.use('*', (req, res) => {
+  res.status(404).json({ 
+    error: 'Route non trouvée',
+    path: req.originalUrl 
+  });
+});
+
+// ============ DÉMARRAGE SERVEUR ============
+const startServer = async () => {
+  try {
+    await initApp();
+    
+    app.listen(PORT, () => {
+      console.log(`
+🚀 ProvTech Backend Hybride démarré
+📍 Port: ${PORT}
+🔄 Mode: Hybride (Legacy + Sécurisé)
+🗄️  Base: ${process.env.DB_NAME || 'provtech'}
+🔐 Auth: JWT + 2FA + Legacy
+📊 Environment: ${process.env.NODE_ENV || 'development'}
+
+📋 Routes disponibles:
+   • /api/auth/* (Système sécurisé)
+   • /api/migration/* (Migration utilisateurs)  
+   • /api/users (Gestion utilisateurs)
+   • /api/audit (Logs sécurisés)
+   • /api/health (Santé du serveur)
+
+🎯 Votre ProvTech existant reste fonctionnel !
+      `);
+    });
+    
+  } catch (error) {
+    console.error('❌ Erreur démarrage serveur:', error);
+    process.exit(1);
+  }
+};
+
+// Gestion propre de l'arrêt
+process.on('SIGTERM', async () => {
+  console.log('🛑 Arrêt du serveur...');
+  if (db) {
+    await db.end();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('🛑 Arrêt du serveur (Ctrl+C)...');
+  if (db) {
+    await db.end();
+  }
+  process.exit(0);
+});
+
+startServer();
+
+module.exports = a

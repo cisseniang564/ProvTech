@@ -1,0 +1,60 @@
+# =========================
+# Node / React / Next.js
+# =========================
+node_modules/
+dist/
+build/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp.*
+.pnp.js
+*.tsbuildinfo
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.egg-info/
+.eggs/
+.venv/
+env/
+venv/
+ENV/
+.ipynb_checkpoints/
+
+# =========================
+# Logs & OS
+# =========================
+*.log
+.DS_Store
+Thumbs.db
+
+# =========================
+# Environnements & Secrets
+# =========================
+.env
+.env.local
+.env.*.local
+
+# =========================
+# IDE / Éditeurs
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# Coverage / Tests
+# =========================
+coverage/
+*.lcov
+.nyc_output/
+pytest_cache/

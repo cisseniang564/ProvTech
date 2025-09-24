@@ -1,0 +1,341 @@
+"""
+Point d'entrée principal de l'API FastAPI
+Simulateur de Provisionnement Actuariel SaaS
+Version corrigée sans imports manquants
+"""
+
+from fastapi import FastAPI, Request, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+import logging
+import time
+from datetime import datetime
+from contextlib import asynccontextmanager
+import os
+
+# Configuration basique si le module config n'existe pas encore
+class SimpleSettings:
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+    DEBUG = os.getenv("DEBUG", "True").lower() == "true"
+    SHOW_DOCS = True
+    BACKEND_CORS_ORIGINS = ["*"]  # Permettre toutes les origines en dev
+    ALLOWED_HOSTS = ["*"]
+    
+settings = SimpleSettings()
+
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO if settings.ENVIRONMENT == "production" else logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# LIFESPAN EVENTS
+# ============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Gestion du cycle de vie de l'application
+    """
+    # Startup
+    logger.info("🚀 Démarrage de l'application Actuarial Provisioning SaaS...")
+    logger.info(f"📍 Environnement: {settings.ENVIRONMENT}")
+    logger.info(f"🔧 Debug: {settings.DEBUG}")
+    
+    # Vérifier la connexion DB (optionnel pour le moment)
+    try:
+        from app.core.database import health_check_db
+        db_status = health_check_db()
+        if db_status["status"] == "healthy":
+            logger.info("✅ Base de données connectée")
+        else:
+            logger.warning("⚠️ Base de données non disponible")
+    except ImportError:
+        logger.warning("⚠️ Module database non configuré")
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur connexion DB: {e}")
+    
+    yield
+    
+    # Shutdown
+    logger.info("👋 Arrêt de l'application...")
+
+# ============================================================================
+# APPLICATION FASTAPI
+# ============================================================================
+
+app = FastAPI(
+    title="Actuarial Provisioning SaaS",
+    description="""
+    API pour le calcul de provisions actuarielles avec support IFRS 17 et Solvabilité II
+    
+    ## Fonctionnalités principales:
+    - 📊 Gestion des triangles de développement
+    - 🧮 Calculs actuariels (Chain Ladder, Bornhuetter-Ferguson, Mack, etc.)
+    - 📈 Visualisation et analyse des résultats
+    - 📋 Conformité IFRS 17 et Solvabilité II
+    - 🔒 Authentification et gestion des utilisateurs
+    """,
+    version="1.0.0",
+    docs_url="/docs" if settings.SHOW_DOCS else None,
+    redoc_url="/redoc" if settings.SHOW_DOCS else None,
+    lifespan=lifespan
+)
+
+# ============================================================================
+# MIDDLEWARES
+# ============================================================================
+
+# CORS - Cross-Origin Resource Sharing
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Compression GZIP
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Middleware de logging des requêtes
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """
+    Log toutes les requêtes HTTP
+    """
+    start_time = time.time()
+    
+    # Générer un ID de requête unique
+    request_id = f"{int(time.time() * 1000)}"
+    
+    # Logger la requête entrante
+    logger.info(f"📥 {request_id} - {request.method} {request.url.path}")
+    
+    # Traiter la requête
+    response = await call_next(request)
+    
+    # Calculer le temps de traitement
+    process_time = (time.time() - start_time) * 1000
+    
+    # Logger la réponse
+    logger.info(
+        f"📤 {request_id} - Status: {response.status_code} - Time: {process_time:.2f}ms"
+    )
+    
+    # Ajouter des headers custom
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time"] = f"{process_time:.2f}ms"
+    
+    return response
+
+# ============================================================================
+# EXCEPTION HANDLERS
+# ============================================================================
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """
+    Gestionnaire d'exceptions HTTP
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Gestionnaire d'erreurs de validation
+    """
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "Validation error",
+            "details": exc.errors(),
+            "body": exc.body,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+
+# ============================================================================
+# ROUTES DE BASE
+# ============================================================================
+
+@app.get("/", tags=["Root"])
+async def root():
+    """
+    Point d'entrée racine de l'API
+    """
+    return {
+        "message": "Welcome to Actuarial Provisioning SaaS API",
+        "version": "1.0.0",
+        "status": "online",
+        "documentation": "/docs",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """
+    Health check de l'application
+    """
+    health_status = {
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": settings.ENVIRONMENT,
+        "services": {
+            "api": "operational",
+            "database": "unknown",  # À implémenter
+            "redis": "unknown"  # À implémenter
+        }
+    }
+    
+    # Essayer de vérifier la DB
+    try:
+        from app.core.database import health_check_db
+        db_status = health_check_db()
+        health_status["services"]["database"] = "operational" if db_status["status"] == "healthy" else "degraded"
+    except:
+        health_status["services"]["database"] = "not_configured"
+    
+    return health_status
+
+@app.get("/info", tags=["Info"])
+async def app_info():
+    """
+    Informations sur l'application
+    """
+    return {
+        "app_name": "Actuarial Provisioning SaaS",
+        "version": "1.0.0",
+        "environment": settings.ENVIRONMENT,
+        "features": {
+            "methods": [
+                "chain_ladder",
+                "bornhuetter_ferguson",
+                "mack",
+                "cape_cod",
+                "bootstrap"
+            ],
+            "compliance": ["IFRS 17", "Solvency II"],
+            "formats": ["CSV", "Excel", "JSON"],
+            "languages": ["fr", "en"]
+        },
+        "limits": {
+            "max_triangle_size": 50,
+            "max_calculations_per_day": 100,
+            "max_file_size_mb": 10
+        },
+        "contact": {
+            "email": "support@actuarial-saas.com",
+            "documentation": "https://docs.actuarial-saas.com"
+        }
+    }
+
+# ============================================================================
+# ROUTES API V1 - TEMPORAIRES (pour tester)
+# ============================================================================
+
+@app.get("/api/v1/test", tags=["Test"])
+async def test_endpoint():
+    """
+    Endpoint de test simple
+    """
+    return {
+        "message": "API V1 is working",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+# ============================================================================
+# INCLUSION DES ROUTERS (quand ils existent)
+# ============================================================================
+
+# Essayer d'importer les routers s'ils existent
+try:
+    from app.api.v1 import auth
+    app.include_router(
+        auth.router,
+        prefix="/api/v1",
+        tags=["Authentication"]
+    )
+    logger.info("✅ Router Auth chargé")
+except ImportError as e:
+    logger.warning(f"⚠️ Router Auth non disponible: {e}")
+
+try:
+    from app.api.v1 import triangles
+    app.include_router(
+        triangles.router,
+        prefix="/api/v1",
+        tags=["Triangles"]
+    )
+    logger.info("✅ Router Triangles chargé")
+except ImportError as e:
+    logger.warning(f"⚠️ Router Triangles non disponible: {e}")
+
+# ============================================================================
+# ROUTES DE DÉVELOPPEMENT
+# ============================================================================
+
+if settings.DEBUG:
+    @app.get("/debug/routes", tags=["Debug"])
+    async def list_routes():
+        """
+        Liste toutes les routes disponibles (dev only)
+        """
+        routes = []
+        for route in app.routes:
+            if hasattr(route, "methods"):
+                routes.append({
+                    "path": route.path,
+                    "methods": list(route.methods),
+                    "name": route.name
+                })
+        return {"routes": routes}
+    
+    @app.get("/debug/config", tags=["Debug"])
+    async def show_config():
+        """
+        Affiche la configuration actuelle (dev only)
+        """
+        return {
+            "environment": settings.ENVIRONMENT,
+            "debug": settings.DEBUG,
+            "cors_origins": settings.BACKEND_CORS_ORIGINS,
+            "docs_enabled": settings.SHOW_DOCS
+        }
+
+# ============================================================================
+# DÉMARRAGE
+# ============================================================================
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    print("\n" + "="*60)
+    print("🚀 ACTUARIAL PROVISIONING SAAS - API")
+    print("="*60)
+    print(f"📍 Environment: {settings.ENVIRONMENT}")
+    print(f"🔧 Debug Mode: {settings.DEBUG}")
+    print(f"📚 Documentation: http://localhost:8000/docs")
+    print(f"🏥 Health Check: http://localhost:8000/health")
+    print("="*60 + "\n")
+    
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="debug" if settings.DEBUG else "info"
+    )

@@ -1,0 +1,16 @@
+
+{
+  "name": "Simulateur de Provisionnement",
+  "short_name": "ProvisionSim",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b132b",
+  "theme_color": "#0b132b",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "type": "image/x-icon",
+      "sizes": "32x32 48x48 64x64"
+    }
+  ]
+}
