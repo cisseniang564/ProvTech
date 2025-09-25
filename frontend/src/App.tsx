@@ -1,5 +1,5 @@
 // ===================================
-// APP.TSX MODIFIÉ - INTÉGRATION SYSTÈME HYBRIDE
+// APP.TSX CORRIGÉ - INTÉGRATION SYSTÈME HYBRIDE + API DATA SELECTOR
 // Fichier: /Users/cisseniang/Documents/ProvTech/frontend/src/App.tsx
 // ===================================
 
@@ -15,8 +15,7 @@ import ErrorBoundary from './components/common/ErrorBoundary';
 import LoadingSpinner from './components/common/Loading';
 import { validateTestData } from './pages/testData';
 console.log(validateTestData());
-//import { createTestProps } from '@/pages/testData';
-//import Reports from '@/pages/Reports';
+
 // Pages existantes (vos imports actuels)
 const Login = React.lazy(() => import('./pages/Login'));
 const Register = React.lazy(() => import('./pages/Register'));
@@ -24,7 +23,6 @@ const Dashboard = React.lazy(() => import('./pages/Dashboard'));
 const DataImport = React.lazy(() => import('./pages/DataImport'));
 const Calculations = React.lazy(() => import('./pages/Calculations'));
 const Reports = React.lazy(() => import('./pages/Reports'));
-
 const Settings = React.lazy(() => import('./pages/Settings'));
 const Audit = React.lazy(() => import('./pages/AuditPage'));
 const Benchmarking = React.lazy(() => import('./pages/Benchmarking'));
@@ -32,6 +30,7 @@ const Simulation = React.lazy(() => import('./pages/ScenarioSimulation'));
 const ScenarioSimulation = React.lazy(() => import('./pages/ScenarioSimulation'));
 const ResultsPage = React.lazy(() => import('./pages/ResultsPage'));
 const TrianglesList = React.lazy(() => import('./pages/TrianglesList'));
+const APIManagement = React.lazy(() => import('./pages/APIManagement'));
 
 // Pages d'erreur existantes
 const NotFound = React.lazy(() => import('./pages/NotFound'));
@@ -44,8 +43,50 @@ const Migration2FA = React.lazy(() => import('./components/auth/Migration2FA'));
 const MigrationPrompt = React.lazy(() => import('./components/auth/MigrationPrompt'));
 const RegulatoryCompliancePage = React.lazy(() => import('./pages/RegulatoryCompliancePage'));
 const ComplianceTestPage = React.lazy(() => import('./pages/ComplianceTestPage'));
+const WorkflowApprovalSystem = React.lazy(() => import('./components/regulatory/WorkflowApprovalSystem'));
+const DocumentationGenerator = React.lazy(() => import('./components/regulatory/DocumentationGenerator'));
+const RegulatoryDashboardUnified = React.lazy(() => import('./components/dashboard/RegulatoryDashboardUnified'));
 
-const WorkflowApprovalSystem =  React.lazy(() => import('./components/regulatory/WorkflowApprovalSystem'));
+// NOUVEAU: Import du composant APIDataSelector et pages associées
+const APIDataSelector = React.lazy(() => import('./components/APIDataSelector'));
+
+// NOUVEAU: Page dédiée à la sélection de données API
+const APIDataSelectorPage = React.lazy(() => 
+  import('./pages/APIDataSelector').catch(() => ({
+    default: () => {
+      // Fallback si la page n'existe pas encore
+      const APIDataSelector = React.lazy(() => import('./components/APIDataSelector'));
+      
+      return (
+        <div className="min-h-screen bg-gray-50">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="mb-8">
+              <h1 className="text-3xl font-bold text-gray-900">Sources de Données API</h1>
+              <p className="mt-2 text-gray-600">
+                Connectez-vous aux sources de données externes pour enrichir vos calculs actuariels
+              </p>
+            </div>
+            
+            <Suspense fallback={<LoadingSpinner />}>
+              <APIDataSelector 
+                mode="standalone"
+                onTriangleSelected={(triangleData) => {
+                  // Rediriger vers les calculs avec le triangle sélectionné
+                  const params = new URLSearchParams({
+                    source: 'api',
+                    triangleId: triangleData.id,
+                    triangleName: triangleData.name
+                  });
+                  window.location.href = `/calculations?${params.toString()}`;
+                }}
+              />
+            </Suspense>
+          </div>
+        </div>
+      );
+    }
+  }))
+);
 
 // Configuration React Query (inchangée)
 const queryClient = new QueryClient({
@@ -69,7 +110,7 @@ interface ProtectedRouteProps {
   children: React.ReactNode;
   requiredPermission?: string;
   requiredRole?: string;
-  requireSecureAuth?: boolean; // NOUVEAU: Force l'auth sécurisée
+  requireSecureAuth?: boolean;
 }
 
 const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
@@ -83,8 +124,8 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     isLoading, 
     user, 
     hasPermission,
-    authMode, // NOUVEAU: Mode d'authentification
-    migrationAvailable // NOUVEAU: Migration disponible
+    authMode = 'legacy',
+    migrationAvailable = false
   } = useAuth();
 
   if (isLoading) {
@@ -95,20 +136,18 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     return <Navigate to="/login" replace />;
   }
 
-  // NOUVEAU: Forcer l'auth sécurisée pour certaines routes
   if (requireSecureAuth && authMode === 'legacy') {
     return <Navigate to="/migration/security-required" replace />;
   }
 
-  if (requiredPermission && !hasPermission(requiredPermission)) {
+  if (requiredPermission && user && !hasPermission(requiredPermission)) {
     return <Navigate to="/unauthorized" replace />;
   }
 
-  if (requiredRole && user?.role !== requiredRole) {
+  if (requiredRole && user && user.role !== requiredRole) {
     return <Navigate to="/unauthorized" replace />;
   }
 
-  // NOUVEAU: Afficher suggestion de migration si applicable
   const shouldShowMigrationPrompt = 
     authMode === 'legacy' && 
     migrationAvailable && 
@@ -125,7 +164,7 @@ const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 // ============ COMPOSANT DE ROUTE PUBLIQUE ÉTENDU ============
 interface PublicRouteProps {
   children: React.ReactNode;
-  forceSecureAuth?: boolean; // NOUVEAU: Forcer connexion sécurisée
+  forceSecureAuth?: boolean;
 }
 
 const PublicRoute: React.FC<PublicRouteProps> = ({ 
@@ -145,17 +184,7 @@ const PublicRoute: React.FC<PublicRouteProps> = ({
   return <>{children}</>;
 };
 
-// ============ COMPOSANT WRAPPER ADMIN ============
-const AdminRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <ProtectedRoute 
-    requiredRole="ADMIN" 
-    requireSecureAuth={true} // Admin nécessite auth sécurisée
-  >
-    {children}
-  </ProtectedRoute>
-);
-
-// ============ COMPOSANT DE FALLBACK (inchangé) ============
+// ============ COMPOSANT DE FALLBACK ============
 const SuspenseFallback: React.FC = () => (
   <div className="min-h-screen flex items-center justify-center bg-gray-50">
     <div className="text-center">
@@ -171,7 +200,6 @@ const AppRoutes: React.FC = () => {
     <Routes>
       {/* ===== ROUTES PUBLIQUES ===== */}
       
-      {/* Connexion legacy (votre système actuel) */}
       <Route
         path="/login"
         element={
@@ -181,7 +209,6 @@ const AppRoutes: React.FC = () => {
         }
       />
 
-      {/* NOUVEAU: Connexion sécurisée avec 2FA */}
       <Route
         path="/login/secure"
         element={
@@ -200,7 +227,52 @@ const AppRoutes: React.FC = () => {
         }
       />
 
-      {/* ===== ROUTES DE MIGRATION (NOUVELLES) ===== */}
+      <Route
+        path="/regulatory-dashboard"
+        element={
+          <ProtectedRoute requiredPermission="compliance:read" requireSecureAuth={true}>
+            <RegulatoryDashboardUnified />
+          </ProtectedRoute>
+        }
+      />  
+
+      {/* ===== NOUVELLES ROUTES API DATA ===== */}
+      
+      <Route
+        path="/api-data"
+        element={
+          <ProtectedRoute requiredPermission="api:read">
+            <APIDataSelectorPage />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/api-data/selector"
+        element={
+          <ProtectedRoute requiredPermission="api:read">
+            <div className="min-h-screen bg-gray-50">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+                <Suspense fallback={<LoadingSpinner />}>
+                  <APIDataSelector 
+                    mode="standalone"
+                    onTriangleSelected={(triangleData) => {
+                      const params = new URLSearchParams({
+                        source: 'api',
+                        triangleId: triangleData.id,
+                        triangleName: triangleData.name
+                      });
+                      window.location.href = `/calculations?${params.toString()}`;
+                    }}
+                  />
+                </Suspense>
+              </div>
+            </div>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* ===== ROUTES DE MIGRATION ===== */}
       
       <Route
         path="/migration/2fa"
@@ -293,7 +365,7 @@ const AppRoutes: React.FC = () => {
       <Route
         path="/reports"
         element={
-          <ProtectedRoute> {/*requiredPermission="exports:read" */}
+          <ProtectedRoute>
             <Reports />
           </ProtectedRoute>
         }
@@ -335,7 +407,8 @@ const AppRoutes: React.FC = () => {
           </ProtectedRoute>
         }
       />
-            {/* Routes de conformité */}
+
+      {/* Routes de conformité */}
       <Route
         path="/compliance"
         element={
@@ -361,47 +434,65 @@ const AppRoutes: React.FC = () => {
             <RegulatoryCompliancePage />
           </ProtectedRoute>
         }
-/>
+      />
 
       {/* ===== ROUTES ADMINISTRATEUR SÉCURISÉES ===== */}
       
+      {/* Routes API Management avec permissions */}
+      <Route
+        path="/api-management"
+        element={
+          <ProtectedRoute requiredPermission="api:read">
+            <APIManagement />
+          </ProtectedRoute>
+        }
+      />
+
       <Route
         path="/audit"
         element={
           <ProtectedRoute 
             requiredPermission="audit:read"
-            requireSecureAuth={true} // Audit nécessite auth sécurisée
+            requireSecureAuth={true}
           >
             <Audit />
           </ProtectedRoute>
         }
       />
 
-      {/* NOUVEAU: Panel d'administration sécurisé */}
       <Route
         path="/admin"
         element={
-          <AdminRoute>
+          <ProtectedRoute 
+            requiredRole="ADMIN" 
+            requireSecureAuth={true}
+          >
             <AdminPanel />
-          </AdminRoute>
+          </ProtectedRoute>
         }
       />
 
       <Route
         path="/admin/users"
         element={
-          <AdminRoute>
+          <ProtectedRoute 
+            requiredRole="ADMIN" 
+            requireSecureAuth={true}
+          >
             <AdminPanel />
-          </AdminRoute>
+          </ProtectedRoute>
         }
       />
 
       <Route
         path="/admin/security"
         element={
-          <AdminRoute>
+          <ProtectedRoute 
+            requiredRole="ADMIN" 
+            requireSecureAuth={true}
+          >
             <AdminPanel />
-          </AdminRoute>
+          </ProtectedRoute>
         }
       />
 
@@ -409,13 +500,13 @@ const AppRoutes: React.FC = () => {
       <Route
         path="/governance"
         element={
-          <ProtectedRoute >{/*requiredPermission="governance:read" requireSecureAuth={true}>*/}
+          <ProtectedRoute>
             <WorkflowApprovalSystem />
           </ProtectedRoute>
         }
       />
-
-      {/* ===== ROUTES D'ERREUR ===== */}
+      
+      {/* ===== ROUTES D'ERREUR ET REDIRECTIONS ===== */}
       <Route path="/unauthorized" element={<Unauthorized />} />
       <Route path="/404" element={<NotFound />} />
       <Route path="/results" element={<ResultsPage />} />
@@ -430,7 +521,7 @@ const AppRoutes: React.FC = () => {
   );
 };
 
-// ============ COMPOSANT PRINCIPAL (inchangé) ============
+// ============ COMPOSANT PRINCIPAL ============
 const App: React.FC = () => {
   return (
     <ErrorBoundary>
